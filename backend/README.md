@@ -54,6 +54,37 @@ curl "localhost:8080/api/rates?base=USD&targets=EUR,ANG"
 | `400`  | Missing `base`, malformed code, or unquoted currency. |
 | `502`  | frankfurter.dev unreachable or erroring.              |
 
+## Caching
+
+Rates are held in memory for an hour, keyed by base currency.
+
+A miss fetches **every** currency for that base, not just the ones requested,
+because upstream charges the same single request either way (10 KB vs 127 B).
+Every later request for that base is then served by filtering in memory,
+whatever its targets, so `?targets=EUR` and `?targets=JPY,INR` share one entry.
+The key space is the set of currencies, so the cache is bounded at roughly
+165 entries without needing eviction.
+
+Measured against the live API:
+
+| Request                          | Time     |
+|----------------------------------|----------|
+| `base=USD` first call (miss)     | 173 ms   |
+| `base=USD` repeat (hit)          | 1.1 ms   |
+| `base=USD`, different targets    | 1.3 ms   |
+| `base=EUR` (new base, miss)      | 36 ms    |
+
+Concurrent misses on the same base are collapsed into one upstream call with
+`singleflight`; the rest wait for and share its result. Without it, a cold cache
+under load sends one request per caller to a free public API.
+
+Expiry is checked on read, so there is no background goroutine to shut down.
+Failed fetches are not cached. The shared fetch is deliberately detached from
+the triggering request's context, so one caller giving up does not cancel a
+fetch the others are waiting on; the HTTP client's own timeout still bounds it.
+
+TTL is `rateCacheTTL` in `cmd/server/main.go`.
+
 ## CORS
 
 Browser callers are served via an allowlist. Set `CORS_ALLOWED_ORIGINS` to a
@@ -83,6 +114,7 @@ Unset, it defaults to the usual local UI dev servers:
 ```
 handler  parses and validates the HTTP shape, maps errors to status codes,
          and applies the CORS and request-logging middleware
+cache    per-base rate cache in front of the adapter, same interface
 service  business rules: normalise codes, fold per-pair rows into a rate map,
          flag stale pairs, verify every requested target came back
 adapter  the frankfurter.dev v2 HTTP client; knows `quotes`, not `targets`
@@ -97,6 +129,7 @@ with a fake and the suite makes no network calls.
 cmd/server/        entrypoint, server lifecycle, graceful shutdown
 internal/handler/  router, HTTP handlers, error mapping
 internal/service/  business rules
+internal/cache/    in-memory rate cache
 internal/adapter/  outbound clients (frankfurter.dev)
 ```
 
