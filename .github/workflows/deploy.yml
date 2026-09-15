@@ -1,0 +1,186 @@
+name: deploy backend
+
+# Backend-only paths: a frontend-only commit should not rebuild and redeploy
+# the API. workflow_dispatch is there to redeploy without an empty commit.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "backend/**"
+      - ".github/workflows/deploy.yml"
+  workflow_dispatch:
+
+# One deploy at a time. A second push while the first is mid-rollout waits
+# rather than racing it; in-progress runs are not cancelled, because cancelling
+# between the ECR push and the App Runner deployment would leave the service on
+# the old image with a newer one sitting in the registry.
+concurrency:
+  group: deploy-backend
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: ap-south-1
+  # Both match Terraform's "${app_name}-${environment}" naming.
+  ECR_REPOSITORY: incubrix-backend-dev
+  APP_RUNNER_SERVICE: incubrix-backend-dev
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test
+        # -race catches the cache's concurrent access; -count=1 defeats the
+        # test result cache, which would otherwise hide a flake on a rerun.
+        run: go test -race -count=1 ./...
+
+  build:
+    name: build and push image
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # for the OIDC token exchanged for AWS credentials
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: configure aws credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: log in to ecr
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: resolve image tags
+        id: meta
+        run: |
+          registry="${{ steps.ecr.outputs.registry }}"
+          repo="$registry/$ECR_REPOSITORY"
+          echo "repo=$repo" >> "$GITHUB_OUTPUT"
+          echo "image=$repo:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          # App Runner runs amd64; a runner is amd64 too, but pinning it means
+          # the same workflow still produces the right image from an arm runner.
+          platforms: linux/amd64
+          push: true
+          # The SHA tag is what gets deployed and what a rollback points at.
+          # :latest moves with it so `docker pull` and the Terraform default
+          # keep working.
+          tags: |
+            ${{ steps.meta.outputs.repo }}:${{ github.sha }}
+            ${{ steps.meta.outputs.repo }}:latest
+          provenance: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    name: deploy to app runner
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: configure aws credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: find the service
+        id: service
+        run: |
+          set -euo pipefail
+          arn=$(aws apprunner list-services \
+            --query "ServiceSummaryList[?ServiceName=='${APP_RUNNER_SERVICE}'].ServiceArn | [0]" \
+            --output text)
+          if [ -z "$arn" ] || [ "$arn" = "None" ]; then
+            echo "::error::No App Runner service named ${APP_RUNNER_SERVICE}. Apply the Terraform stack in terraform/ first."
+            exit 1
+          fi
+          echo "arn=$arn" >> "$GITHUB_OUTPUT"
+
+      - name: deploy
+        run: |
+          set -euo pipefail
+          arn='${{ steps.service.outputs.arn }}'
+
+          auto=$(aws apprunner describe-service --service-arn "$arn" \
+            --query 'Service.SourceConfiguration.AutoDeploymentsEnabled' --output text)
+
+          if [ "$auto" = "True" ]; then
+            # The push to :latest already raised an ECR event; App Runner is
+            # rolling on its own. Give the event time to land, then wait it out
+            # rather than starting a second, redundant deployment.
+            echo "auto-deployments are on; waiting for the push-triggered rollout"
+            sleep 30
+          else
+            echo "starting a deployment"
+            aws apprunner start-deployment --service-arn "$arn" >/dev/null
+          fi
+
+          # App Runner has no `aws apprunner wait`, so poll. 40 x 30s = 20 min,
+          # comfortably longer than a rollout of this image.
+          for _ in $(seq 1 40); do
+            status=$(aws apprunner describe-service --service-arn "$arn" \
+              --query 'Service.Status' --output text)
+            echo "status: $status"
+            case "$status" in
+              RUNNING) exit 0 ;;
+              OPERATION_IN_PROGRESS) sleep 30 ;;
+              *) echo "::error::Service ended in $status"; exit 1 ;;
+            esac
+          done
+
+          echo "::error::Timed out waiting for the deployment to finish"
+          exit 1
+
+      - name: smoke test
+        run: |
+          set -euo pipefail
+          host=$(aws apprunner describe-service \
+            --service-arn '${{ steps.service.outputs.arn }}' \
+            --query 'Service.ServiceUrl' --output text)
+
+          # The service reports RUNNING a moment before the new instance is
+          # reachable through the edge, so retry rather than failing the deploy
+          # on the first connection refused.
+          for attempt in $(seq 1 10); do
+            if curl --fail --silent --show-error --max-time 10 "https://${host}/api/health"; then
+              echo
+              echo "healthy at https://${host}"
+              exit 0
+            fi
+            echo "attempt ${attempt} failed; retrying"
+            sleep 10
+          done
+
+          echo "::error::Health check never passed at https://${host}/api/health"
+          exit 1

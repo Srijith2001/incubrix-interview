@@ -112,3 +112,26 @@ variable "tags" {
   type        = map(string)
   default     = {}
 }
+
+variable "github_repository" {
+  description = "owner/repo allowed to assume the deploy role via OIDC. Empty disables the GitHub Actions role entirely."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.github_repository == "" || can(regex("^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", var.github_repository))
+    error_message = "github_repository must be in owner/repo form, or empty."
+  }
+}
+
+variable "github_deploy_refs" {
+  description = "Subject patterns on github_repository allowed to assume the deploy role."
+  type        = list(string)
+  default     = ["ref:refs/heads/main"]
+}
+
+variable "create_github_oidc_provider" {
+  description = "Create the GitHub OIDC provider. Set false if the account already has one, and it is looked up instead."
+  type        = bool
+  default     = true
+}

@@ -103,6 +103,50 @@ Everything is a variable; see `variables.tf` for the full set with defaults.
 `PORT` and `CORS_ALLOWED_ORIGINS` are the only two settings the binary reads, and
 both are wired through `local.runtime_environment_variables`.
 
+## CI/CD
+
+[`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml) runs on a push
+to `main` that touches `backend/**`: `go vet` and `go test -race`, then a
+buildx build pushed to this ECR repository tagged with both the commit SHA and
+`latest`, then the App Runner rollout and a health check against the live URL.
+
+It authenticates with OIDC, not an access key. Set `github_repository` to turn
+the role on:
+
+```hcl
+github_repository = "Srijith2001/incubrix-interview"
+```
+
+```sh
+terraform apply
+terraform output -raw github_actions_role_arn
+```
+
+Put that ARN in the repository as the secret `AWS_DEPLOY_ROLE_ARN`
+(Settings -> Secrets and variables -> Actions), or:
+
+```sh
+gh secret set AWS_DEPLOY_ROLE_ARN --body "$(terraform output -raw github_actions_role_arn)"
+```
+
+The trust policy only accepts tokens whose subject matches
+`repo:<github_repository>:<ref>` for the refs in `github_deploy_refs`
+(`refs/heads/main` by default), and the role can do nothing beyond pushing to
+this one repository and deploying this one service.
+
+If the account already has a `token.actions.githubusercontent.com` provider —
+only one per account is allowed — set `create_github_oidc_provider = false` and
+the existing one is looked up instead.
+
+The workflow's `AWS_REGION`, `ECR_REPOSITORY`, and `APP_RUNNER_SERVICE` env
+values must match `aws_region` and `${app_name}-${environment}`. Change one and
+change the other.
+
+With `auto_deployments_enabled = true`, the ECR push is what triggers the
+rollout and the workflow waits it out. With it `false`, the workflow calls
+`StartDeployment` itself. Either way it polls until the service is `RUNNING`
+and fails the run if it is not.
+
 ## State
 
 Local, per `versions.tf`. `.tfstate` and `.tfstate.*` are gitignored, along with
