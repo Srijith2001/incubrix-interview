@@ -1,4 +1,4 @@
-# backend
+# Backend for Currency Watcher
 
 Minimal Go HTTP service scaffold.
 
@@ -69,14 +69,14 @@ docker run --rm -p 8080:8080   -e CORS_ALLOWED_ORIGINS=http://localhost:5173   i
 
 The build is two stages. The first compiles a static binary with
 `CGO_ENABLED=0`; the second is `distroless/static`, which carries CA
-certificates for the outbound TLS call and nothing else — no shell, no package
+certificates for the outbound TLS call and nothing else ï¿½ no shell, no package
 manager, no libc. The server runs as `nonroot` (uid 65532).
 
 `go.mod` and `go.sum` are copied before the source so that editing code does not
 invalidate the dependency-download layer.
 
 `ENTRYPOINT` is exec form, so the server is PID 1 and receives the `SIGTERM`
-that `docker stop` sends — which is what its graceful shutdown waits on.
+that `docker stop` sends ï¿½ which is what its graceful shutdown waits on.
 
 There is no `HEALTHCHECK` line: the image has no shell or `curl` to run one
 with. Point your orchestrator's HTTP probe at `/api/health` instead.
@@ -129,7 +129,7 @@ Unset, it defaults to the usual local UI dev servers:
   requests later needs no rework.
 - `Vary: Origin` is always sent on cross-origin responses so a shared cache
   cannot serve one origin's response to another.
-- Preflight `OPTIONS` is answered by the middleware, which wraps the mux — the
+- Preflight `OPTIONS` is answered by the middleware, which wraps the mux ï¿½ the
   mux itself only routes `GET` and would reject preflight with `405`.
 - A request from an unlisted origin is still served, just without the
   `Access-Control-Allow-Origin` header; the browser withholds the body from the
