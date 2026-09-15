@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { fetchRatesForPairs } from '../api/rates'
 
 const DEFAULT_PAIRS = [
     { base: 'INR', target: 'EUR' },
@@ -34,22 +35,7 @@ export function useRates() {
         setIsLoading(true)
         setError('')
         try {
-            const apiBase = import.meta.env.VITE_API_BASE_URL || ''
-            const groupedTargets = pairs.reduce((groups, pair) => {
-                groups[pair.base] = [...(groups[pair.base] || []), pair.target]
-                return groups
-            }, {})
-            const responses = await Promise.all(Object.entries(groupedTargets).map(async ([base, targets]) => {
-                const endpoint = `${apiBase}/api/rates?base=${base}&targets=${targets.join(',')}`
-                const response = await fetch(endpoint)
-                if (!response.ok) throw new Error(`Request failed (${response.status})`)
-                const data = await response.json()
-                return { base, rates: data.rates || {} }
-            }))
-            setRates(Object.fromEntries(
-                responses.flatMap(({ base, rates: baseRates }) => Object.entries(baseRates)
-                    .map(([target, rate]) => [`${base}:${target}`, rate])),
-            ))
+            setRates(await fetchRatesForPairs(pairs))
             setSource('live')
             setLastUpdated(new Date())
         } catch {
