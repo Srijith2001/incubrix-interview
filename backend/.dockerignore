@@ -1,0 +1,19 @@
+# Build output and local binaries.
+bin/
+*.exe
+
+# Version control and editor state.
+.git/
+.gitignore
+.vscode/
+.idea/
+
+# Local environment and logs.
+.env
+*.log
+
+# Not needed to compile the server.
+Dockerfile
+.dockerignore
+README.md
+Makefile

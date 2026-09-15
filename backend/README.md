@@ -54,6 +54,33 @@ curl "localhost:8080/api/rates?base=USD&targets=EUR,ANG"
 | `400`  | Missing `base`, malformed code, or unquoted currency. |
 | `502`  | frankfurter.dev unreachable or erroring.              |
 
+## Docker
+
+```sh
+docker build -t incubrix-backend .
+docker run --rm -p 8080:8080 incubrix-backend
+```
+
+Configuration is passed the same way the binary reads it locally:
+
+```sh
+docker run --rm -p 8080:8080   -e CORS_ALLOWED_ORIGINS=http://localhost:5173   incubrix-backend
+```
+
+The build is two stages. The first compiles a static binary with
+`CGO_ENABLED=0`; the second is `distroless/static`, which carries CA
+certificates for the outbound TLS call and nothing else — no shell, no package
+manager, no libc. The server runs as `nonroot` (uid 65532).
+
+`go.mod` and `go.sum` are copied before the source so that editing code does not
+invalidate the dependency-download layer.
+
+`ENTRYPOINT` is exec form, so the server is PID 1 and receives the `SIGTERM`
+that `docker stop` sends — which is what its graceful shutdown waits on.
+
+There is no `HEALTHCHECK` line: the image has no shell or `curl` to run one
+with. Point your orchestrator's HTTP probe at `/api/health` instead.
+
 ## Caching
 
 Rates are held in memory for an hour, keyed by base currency.
