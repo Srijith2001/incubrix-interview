@@ -86,6 +86,14 @@ func (c *RateCache) lookup(base string) ([]adapter.CurrencyRate, bool) {
 // call per base runs at a time; concurrent callers share its outcome.
 func (c *RateCache) fetchAndStore(ctx context.Context, base string) ([]adapter.CurrencyRate, error) {
 	fetched, err, _ := c.fetchGroup.Do(base, func() (any, error) {
+		// Look again now that this call owns the key. The caller's own lookup
+		// missed, but an earlier flight may have stored a fresh entry between
+		// then and now; without this, a stampede whose callers arrive just
+		// after each other still sends one request per caller upstream.
+		if rates, ok := c.lookup(base); ok {
+			return rates, nil
+		}
+
 		// The result is shared, so the fetch must not die with whichever
 		// caller happened to trigger it. The client's own timeout still
 		// bounds how long this can run.
