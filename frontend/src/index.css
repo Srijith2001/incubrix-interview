@@ -1,0 +1,33 @@
+:root {
+  --paper: #f5f3ed;
+  --card: #fbfaf6;
+  --ink: #1f2925;
+  --muted: #7a817d;
+  --line: #d9dcd5;
+  --warm: #eeeadb;
+  --gold: #b58b37;
+  --green: #4d8b70;
+  --red: #a75b4e;
+  --heading: Georgia, 'Times New Roman', serif;
+  --mono: 'Courier New', monospace;
+  font-family: 'Trebuchet MS', sans-serif;
+  color: var(--ink);
+  background: var(--paper);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  min-width: 320px;
+  margin: 0;
+  background: radial-gradient(circle at top right, #ebe8dc 0, var(--paper) 38%);
+}
+
+#root {
+  min-height: 100vh;
+}
