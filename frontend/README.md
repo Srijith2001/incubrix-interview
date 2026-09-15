@@ -1,4 +1,4 @@
-# Rateboard frontend
+# Currency Watcher
 
 React + Vite dashboard for tracking currency rates from a local API.
 
