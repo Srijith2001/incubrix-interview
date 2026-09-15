@@ -106,9 +106,26 @@ both are wired through `local.runtime_environment_variables`.
 ## CI/CD
 
 [`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml) runs on a push
-to `main` that touches `backend/**`: `go vet` and `go test -race`, then a
-buildx build pushed to this ECR repository tagged with both the commit SHA and
-`latest`, then the App Runner rollout and a health check against the live URL.
+to `main` that touches `backend/**`: `go vet` and `go test -race`, then a buildx
+build of the backend image.
+
+**The AWS half is commented out** — the ECR login and push, and the whole deploy
+job. Nothing in the workflow needs an AWS account as it stands; the image is
+built and tagged on the runner and discarded, which still fails the run if the
+Dockerfile breaks. The disabled steps stay in the file with the exact commands,
+so enabling them is uncommenting, not rewriting.
+
+To turn the deploy on:
+
+1. Apply this stack, so the ECR repository and App Runner service exist.
+2. Set `github_repository` and apply again, for the deploy role (below).
+3. Store the role ARN as the `AWS_DEPLOY_ROLE_ARN` secret.
+4. In `deploy.yml`: uncomment the two AWS steps in `build`, set `push: true`,
+   restore the `permissions` block with `id-token: write`, switch the `repo=`
+   line to the registry-prefixed form, and uncomment the `deploy` job.
+
+Once on, it pushes to this ECR repository tagged with both the commit SHA and
+`latest`, then waits out the App Runner rollout and health-checks the live URL.
 
 It authenticates with OIDC, not an access key. Set `github_repository` to turn
 the role on:
