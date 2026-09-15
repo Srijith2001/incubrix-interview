@@ -224,6 +224,12 @@ h3 {
   width: 90px;
 }
 
+.pair-arrow {
+  align-self: center;
+  color: var(--muted);
+  font: 18px var(--mono);
+}
+
 button {
   cursor: pointer;
 }

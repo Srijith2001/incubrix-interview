@@ -26,6 +26,7 @@ export function WatchlistForm({ onAdd }) {
                     placeholder="INR"
                     maxLength="3"
                 />
+                <span className="pair-arrow" aria-hidden="true">&#8594;</span>
                 <label className="sr-only" htmlFor="new-currency">Target currency</label>
                 <input
                     id="new-currency"

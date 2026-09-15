@@ -105,6 +105,35 @@ Concurrent misses on the same base are collapsed into one upstream call with
 `singleflight`; the rest wait for and share its result. Without it, a cold cache
 under load sends one request per caller to a free public API.
 
+### Locking
+
+A `sync.RWMutex` guards the map of entries.
+
+- **Reads share the lock.** `lookup` takes `RLock`, so any number of cache hits
+  run at the same time. Only a store blocks them, and stores are rare.
+- **Writes hold it for one line.** `Lock` wraps the map assignment and nothing
+  else. The upstream HTTP call happens *before* it, unlocked.
+- **Why that matters.** If the lock were held across the fetch, one slow
+  upstream request would freeze every reader of every other currency for as long
+  as it took. A single sluggish fetch would become a service-wide stall.
+- **What it costs.** Releasing the lock during the fetch is exactly what allows
+  several misses to fetch at once. The mutex cannot prevent that — it is not
+  meant to.
+- **Which is `singleflight`'s job.** Two different problems: the mutex stops the
+  map from being corrupted, `singleflight` stops the same work being done twice.
+  Neither replaces the other.
+
+One invariant holds it together: **a stored `[]CurrencyRate` is never modified
+afterwards.**
+
+- `lookup` returns the slice itself, not a copy, so callers read it after the
+  `RLock` has been released. That is only safe because nothing writes to it.
+- `filterQuotes` allocates a new slice; the service layer folds the rows into
+  its own map. Neither touches the stored one.
+- A later change that sorts or rewrites the cached slice in place would be a
+  data race, and the tests would catch it only now and then. Copy on read
+  instead, or keep the invariant.
+
 Expiry is checked on read, so there is no background goroutine to shut down.
 Failed fetches are not cached. The shared fetch is deliberately detached from
 the triggering request's context, so one caller giving up does not cancel a

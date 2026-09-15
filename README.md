@@ -1,16 +1,31 @@
-
-
 # Currency Watcher
 
 Currency rate dashboard: a Go API that serves exchange rates from
 [frankfurter.dev](https://frankfurter.dev), a React UI on top of it, and the
 Terraform to run the API on AWS.
 
+```mermaid
+flowchart LR
+    U(["Browser"]) --> FE["React + Vite UI<br/>:5173"]
+
+    FE -->|"GET /api/rates?base=USD"| H
+
+    subgraph API ["Go API — :8080"]
+        direction TB
+        H["handler<br/><i>HTTP shape, CORS, status codes</i>"]
+        S["service<br/><i>validate, fold, flag stale</i>"]
+        C["cache<br/><i>1h per base currency</i>"]
+        A["adapter<br/><i>frankfurter.dev client</i>"]
+        H --> S --> C --> A
+    end
+
+    A -.->|"on miss only"| FR[("frankfurter.dev")]
+
+    API -.->|"image"| AWS["ECR → App Runner<br/><i>terraform/</i>"]
 ```
-frontend (React + Vite)  ──>  backend (Go, :8080)  ──>  frankfurter.dev
-                                    │
-                              terraform/  ──>  ECR + App Runner
-```
+
+A cache hit stops at `cache` and never reaches the adapter — the dotted edge is
+the uncommon path.
 
 | Directory | What it is | Its own README |
 |-----------|------------|----------------|
@@ -21,6 +36,86 @@ frontend (React + Vite)  ──>  backend (Go, :8080)  ──>  frankfurter.dev
 
 Deployment covers the backend only. The frontend is built and served however
 you like; it needs nothing from this stack beyond the API's URL.
+
+## Design notes
+
+### Architecture
+
+- **Four layers, each one job.** `handler` deals with HTTP — parsing, CORS,
+  status codes. `service` applies the rules. `cache` remembers recent answers.
+  `adapter` talks to frankfurter.dev. Nothing else knows about HTTP status
+  codes; nothing else knows frankfurter.dev exists.
+- **Layers depend on interfaces, not on each other's structs.** Each one can be
+  handed a fake stand-in, which is why the test suite makes no network calls and
+  needs no API key.
+- **The cache is a drop-in.** It implements the same interface as the upstream
+  client, so it sits in front of the adapter and the service layer cannot tell
+  the difference. Removing or swapping it is one line in `main.go`.
+- **Vocabulary is translated at the boundary.** Upstream returns one row per
+  currency pair and calls them `quotes`; the service folds those rows into the
+  `{"EUR": 0.86}` shape this API promises and calls them `targets`.
+- **Failures are never partial.** Ask for three currencies and the upstream
+  breaks, you get a `502` — not a `200` holding two of them.
+- **The process keeps nothing.** All configuration comes from environment
+  variables and no state outlives the process, so the container is disposable
+  and scaling out needs no coordination.
+
+### Caching
+
+- **What is cached:** every rate for a base currency, for one hour, in memory.
+  Upstream republishes about once a day, so an hour is safely inside the window
+  where the numbers cannot have changed.
+- **A miss fetches everything, not just what was asked for.** Upstream charges
+  the same one request either way — 10 KB against 127 B — so fetching the lot
+  and filtering in memory means `?targets=EUR` and `?targets=JPY,INR` share a
+  single cache entry.
+- **No eviction policy, on purpose.** There are only ~165 currencies, so the
+  cache cannot grow past ~165 entries. Nothing needs evicting.
+- **No cleanup goroutine either.** Expiry is checked when an entry is read, so
+  there is nothing to shut down.
+- **Hits run in parallel.** An `RWMutex` guards the map; readers do not block
+  each other, and only a write blocks them.
+- **The lock never covers the network call.** It is taken around the map
+  assignment alone. Hold it across the fetch and one slow upstream request would
+  freeze readers of every other currency.
+- **Simultaneous misses collapse into one request.** `singleflight` lets the
+  first caller fetch while the rest wait for and share its answer. Without it, a
+  cold cache under load fires one request per caller at a free public API.
+- **Callers arriving just after each other still share.** The cache is checked a
+  second time inside the flight, so a caller whose first check missed picks up
+  what the previous flight just stored.
+- **One caller giving up does not cancel the rest.** The shared fetch is
+  detached from whichever request happened to trigger it; the HTTP client's own
+  timeout still bounds it.
+- **Failures are not cached.** A broken fetch is retried by the next caller, not
+  remembered for an hour.
+- **Result:** ~173 ms cold, ~1 ms warm.
+
+### Infrastructure as code
+
+- **App Runner + ECR, not ECS Fargate.** Fargate would need a VPC, subnets, a
+  NAT gateway, a load balancer, a target group, and an ACM certificate. For one
+  stateless container, App Runner gives an HTTPS endpoint, rolling deploys, and
+  autoscaling out of a single resource.
+- **Small enough to read in one sitting** matters more here than the flexibility
+  Fargate would add.
+- **Split by concern:** `ecr.tf`, `iam.tf`, `apprunner.tf`, with every input in
+  `variables.tf`.
+- **Bad input fails at plan time, not apply time.** Every variable carries a
+  default and a validation rule, so an impossible CPU size or a malformed
+  repository name is caught before anything is created.
+- **One name pattern everywhere:** `${app_name}-${environment}`. A second
+  environment is a different tfvars file, not a second copy of the code.
+- **State is local, deliberately.** A remote backend needs its own bootstrapped
+  bucket and lock table, which is not worth it for a single operator. Moving to
+  S3 later is one block plus `terraform init -migrate-state`.
+- **Least privilege, twice over.** App Runner pulls as a role that can only
+  pull. The optional CI role uses OIDC instead of a stored access key, trusts
+  only tokens from one repository and branch, and can do nothing but push to
+  that one ECR repository and deploy that one service.
+- **One wrinkle, by design:** App Runner will not start against an image tag
+  that holds no image, so the first deploy is two-staged — repository, push,
+  then service.
 
 ## Prerequisites
 
