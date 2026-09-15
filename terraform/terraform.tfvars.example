@@ -1,0 +1,18 @@
+# Copy to terraform.tfvars and edit. terraform.tfvars is gitignored.
+
+aws_region  = "ap-south-1"
+environment = "dev"
+app_name    = "incubrix-backend"
+app_port    = 8080
+image_tag   = "latest"
+
+# 0.25 vCPU / 0.5 GB is enough for this service; raise for load testing.
+cpu    = "256"
+memory = "512"
+
+min_instances = 1
+max_instances = 3
+
+# Origins the browser UI is served from. Leave unset to keep the binary's
+# localhost defaults.
+# cors_allowed_origins = "https://ui.example.com"

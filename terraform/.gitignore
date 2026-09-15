@@ -1,0 +1,16 @@
+# State is local (see versions.tf) and must never be committed: it holds
+# resource IDs and any sensitive attribute the providers recorded.
+*.tfstate
+*.tfstate.*
+.terraform/
+# .terraform.lock.hcl is deliberately committed: it pins provider hashes.
+crash.log
+crash.*.log
+
+# Real variable values; terraform.tfvars.example is the one that is committed.
+*.tfvars
+!*.tfvars.example
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
